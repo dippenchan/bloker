@@ -1,5 +1,6 @@
 package com.example.blocker
 
+import android.app.Notification
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -15,6 +16,7 @@ import android.widget.Switch
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import java.net.URL
+import java.net.URLEncoder
 
 object Prefs {
     private const val NAME = "blocker"
@@ -152,13 +154,38 @@ class MainActivity : AppCompatActivity() {
 }
 
 class NotiListener : NotificationListenerService() {
+
+    companion object {
+        const val BARK_KEY = "KaUwEC5MKpjqBPeYGjiw8m"
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         val n = sbn ?: return
         if (n.packageName == packageName) return
-        if (!Prefs.blockNoti(this)) return
 
+        val extras = n.notification.extras
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+        val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+
+        forwardToBark(title, text)
+
+        if (!Prefs.blockNoti(this)) return
         cancelNotification(n.packageName, n.tag, n.id)
         Log.d("Blocker", "已拦通知: ${n.packageName}")
+    }
+
+    private fun forwardToBark(title: String, body: String) {
+        if (BARK_KEY.isEmpty()) return
+        Thread {
+            try {
+                val t = URLEncoder.encode(title.ifBlank { "通知" }, "UTF-8")
+                val b = URLEncoder.encode(body.ifBlank { "（无内容）" }, "UTF-8")
+                val url = URL("https://api.day.app/$BARK_KEY/$t/$b")
+                url.openConnection().apply { connectTimeout = 5000 }.getInputStream().close()
+            } catch (e: Exception) {
+                Log.e("Blocker", "Bark 发送失败: ${e.message}")
+            }
+        }.start()
     }
 }
 
