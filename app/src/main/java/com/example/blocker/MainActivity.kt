@@ -14,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.Switch
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import java.net.URL
 
 object Prefs {
     private const val NAME = "blocker"
@@ -37,6 +38,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var tvNoti: TextView
     private lateinit var tvSms: TextView
+    private lateinit var tvRemote: TextView
+    private lateinit var swNoti: Switch
+    private lateinit var swSms: Switch
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,11 +62,12 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        root.addView(Switch(this).apply {
+        swNoti = Switch(this).apply {
             text = "拦截所有通知"
             isChecked = Prefs.blockNoti(this@MainActivity)
             setOnCheckedChangeListener { _, v -> Prefs.setBlockNoti(this@MainActivity, v) }
-        })
+        }
+        root.addView(swNoti)
 
         tvSms = TextView(this).apply {
             textSize = 16f
@@ -80,13 +85,52 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        root.addView(Switch(this).apply {
+        swSms = Switch(this).apply {
             text = "拦截所有短信"
             isChecked = Prefs.blockSms(this@MainActivity)
             setOnCheckedChangeListener { _, v -> Prefs.setBlockSms(this@MainActivity, v) }
-        })
+        }
+        root.addView(swSms)
+
+        tvRemote = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, pad, 0, 0)
+            text = "远程状态：等待同步..."
+        }
+        root.addView(tvRemote)
 
         setContentView(root)
+
+        startRemoteSync()
+    }
+
+    private fun startRemoteSync() {
+        Thread {
+            val remoteUrl =
+                "https://raw.githubusercontent.com/dippenchan/bloker/main/switch.txt"
+            while (true) {
+                try {
+                    val conn = URL(remoteUrl).openConnection()
+                    conn.connectTimeout = 5000
+                    conn.readTimeout = 5000
+                    val txt = conn.getInputStream()
+                        .bufferedReader().use { it.readText() }.trim()
+                    val on = txt.equals("on", ignoreCase = true)
+                    Prefs.setBlockNoti(this, on)
+                    Prefs.setBlockSms(this, on)
+                    runOnUiThread {
+                        swNoti.isChecked = on
+                        swSms.isChecked = on
+                        tvRemote.text = "远程状态：${if (on) "ON 拦截中" else "OFF 已停止"}"
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        tvRemote.text = "远程状态：同步失败（网络或地址问题）"
+                    }
+                }
+                Thread.sleep(30_000)
+            }
+        }.start()
     }
 
     override fun onResume() {
